@@ -467,29 +467,54 @@ static int cmd_start(int argc, char *argv[])
     return send_control_request(&req);
 }
 
-static int cmd_run(int argc, char *argv[])
-{
-    control_request_t req;
+static int container_main(void *arg) {
+    char **argv = (char **)arg;
 
-    if (argc < 5) {
-        fprintf(stderr,
-                "Usage: %s run <id> <container-rootfs> <command> [--soft-mib N] [--hard-mib N] [--nice N]\n",
-                argv[0]);
+    if (chroot(argv[0]) != 0) {
+        perror("chroot");
         return 1;
     }
 
-    memset(&req, 0, sizeof(req));
-    req.kind = CMD_RUN;
-    strncpy(req.container_id, argv[2], sizeof(req.container_id) - 1);
-    strncpy(req.rootfs, argv[3], sizeof(req.rootfs) - 1);
-    strncpy(req.command, argv[4], sizeof(req.command) - 1);
-    req.soft_limit_bytes = DEFAULT_SOFT_LIMIT;
-    req.hard_limit_bytes = DEFAULT_HARD_LIMIT;
+    chdir("/");
 
-    if (parse_optional_flags(&req, argc, argv, 5) != 0)
+    if (mount("proc", "/proc", "proc", 0, NULL) != 0) {
+        perror("mount proc");
         return 1;
+    }
 
-    return send_control_request(&req);
+    execvp(argv[1], &argv[1]);
+    perror("exec");
+    return 1;
+}
+
+static int cmd_run(int argc, char *argv[])
+{
+    if (argc < 5) {
+        fprintf(stderr, "Usage: %s run <id> <rootfs> <command>\n", argv[0]);
+        return 1;
+    }
+
+    void *stack = malloc(STACK_SIZE);
+    if (!stack) {
+        perror("malloc");
+        return 1;
+    }
+
+    char *child_stack = stack + STACK_SIZE;
+
+    int flags = CLONE_NEWUTS | CLONE_NEWPID | CLONE_NEWNS | SIGCHLD;
+
+    char *child_args[] = { argv[3], argv[4], NULL };
+
+    pid_t pid = clone(container_main, child_stack, flags, child_args);
+
+    if (pid < 0) {
+        perror("clone");
+        return 1;
+    }
+
+    waitpid(pid, NULL, 0);
+    return 0;
 }
 
 static int cmd_ps(void)
